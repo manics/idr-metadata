@@ -106,6 +106,44 @@ def get_celery_args(args, calc_opts, subdir_bn, avro_bn):
     return celery_args
 
 
+def get_celery_args_single(args, calc_opts):
+    celery_args = dict(
+        image=args.docker_img,
+        # We need to create the output directories, which can only be done
+        # on the worker, so mount the top-level directory (this will be
+        # mounted as /output, and must be writeable by the container user)
+        outputpath=args.out_dir,
+    )
+
+    if args.user:
+        celery_args['user'] = str(args.user)
+
+    celery_args['inputpath'] = args.input_dir
+
+    tag, _ = os.path.splitext(os.path.basename(args.input_dir))
+
+    # This must be writeable by the celery-worker (not the docker user)
+    celery_args['logoutfile'] = os.path.join(
+        args.out_dir, '%s.log' % tag)
+
+    cmd = ['calc']
+    if calc_opts:
+        cmd.extend(calc_opts)
+
+    # The parent dir of the input avro file will be mounted as /input
+    # Top-level output dir is mounted as /output inside the container
+    cmd.extend([
+        '/input',
+        '--out-dir',
+        '/output',
+    ])
+
+    # TODO: quote these arguments?
+    celery_args['command'] = ' '.join(cmd)
+
+    return celery_args
+
+
 def main(argv):
     try:
         idx = argv.index("--")
@@ -121,6 +159,15 @@ def main(argv):
     celery = Celery(broker=args.broker)
 
     with open(args.log, "w") as fo:
+        if os.path.isfile(args.input_dir):
+            celery_args = get_celery_args_single(args, calc_opts)
+            if args.dry_run:
+                print celery_args
+            else:
+                r = celery.send_task('tasks.run_docker', kwargs=celery_args)
+                fo.write(str(r) + "\n")
+            return
+
         for i, (subdir_bn, avro_bn) in enumerate(iter_input(args.input_dir)):
             if whitelist and (subdir_bn, avro_bn) not in whitelist:
                 continue
